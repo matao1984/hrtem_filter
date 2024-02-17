@@ -197,7 +197,7 @@ def abs_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=2):
 
 
 # Nonlinear filter function            
-def nlfilter(x_in, N, delta=10, lowpass_cutoff=0.3, final_lowpass = False, lowpass_order=2):
+def nlfilter(img, N, delta=10, lowpass_cutoff=0.3, final_lowpass = False, lowpass_order=2):
     """
     Non-linear filter
     img: img 2D-array
@@ -207,6 +207,7 @@ def nlfilter(x_in, N, delta=10, lowpass_cutoff=0.3, final_lowpass = False, lowpa
     The Butterworth filter will use lowpass_order and lowpass_cutoff
     Return: filtered image array and difference
     """
+    x_in = img
     i=0
     while i < N:
         x_lp = gaussian_lowpass(x_in, lowpass_cutoff)
@@ -220,5 +221,5 @@ def nlfilter(x_in, N, delta=10, lowpass_cutoff=0.3, final_lowpass = False, lowpa
     if final_lowpass:
         x_in = bw_lowpass(x_in, lowpass_order, lowpass_cutoff)
     img_filtered = np.single(x_in) # Convert to 32 bit float
-    img_diff = x_in - img_filtered
+    img_diff = img - img_filtered
     return img_filtered, img_diff
