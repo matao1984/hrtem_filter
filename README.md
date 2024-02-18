@@ -25,13 +25,13 @@ lowpass_cutoff: a cutoff ratio in frequency domain for the lowpass. 1 means no f
 
 lowpass_order: order for the Butterworth filter; smaller int retults more tapered cutoff
 
-`nlfilter(img, N, delta=10, lowpass_cutoff=0.3, final_lowpass = False, lowpass_order=2)`
+`nlfilter(img, N=50, delta=10, lowpass_cutoff=0.3, lowpass = True, lowpass_order=2)`
 
 This function carries out the nonlinear filter, a combination of Gaussian lowpass and Wiener filters. It takes `img`, an image array as an input, and returns the filtered image array and a difference image array. Parameters are the following:
 
 N: number of iterations for the lowpass + wiener filtering. More iterations give better noise reduction and takes more time.
 
-final_lowpass: if True, also applys a Butterworth lowpass filter after the nonlinear filtering. This helps to remove residual high frequency noise.
+lowpass: if True, also applys a Butterworth lowpass filter after the Wiener filtering in every iteration. This prevents from adding back high frequency noise.
 
 All other parameters are the same as in the `wiener_filter`.
 
