@@ -41,6 +41,11 @@ In addition, `hrtem_filter` also provides two lowpass filters: Butterworth filte
 
 `gaussian_lowpass(img, cutoff_ratio)`
 
+## Citation
+If you use `hrtem_filter` in your publications, I kindly ask that you cite the following paper:
+
+T. Ma, Python implementation of various denoising filters for HR(S)TEM images, Microscopy and Microanalysis 30 (Suppl 1) (2024) ozae044.213. [doi:10.1093/mam/ozae044.213.](https://doi.org/10.1093/mam/ozae044.213)
+
 ## Contact
 Send your questions and suggestions to Dr. Tao Ma at matao1984@gmail.com
 
