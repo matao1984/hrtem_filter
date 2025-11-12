@@ -9,6 +9,11 @@ Use pip:
 `pip install hrtem_filter`
 
 ## Usage
+Use wraper function:
+`apply_filter(img, filter_type, **kwargs)`
+
+Or call filter functions explicitly:
+
 The package contains three main filter functions:
 
 `wiener_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=2)`
@@ -39,7 +44,7 @@ In addition, `hrtem_filter` also provides two lowpass filters: Butterworth filte
 
 `bw_lowpass(img, order, cutoff_ratio)`
 
-`gaussian_lowpass(img, cutoff_ratio)`
+`gaussian_lowpass(img, cutoff_ratio, hp_cutoff_ratio)`
 
 ## Citation
 If you use `hrtem_filter` in your publications, I kindly ask that you cite the following paper:
@@ -48,6 +53,17 @@ T. Ma, Python implementation of various denoising filters for HR(S)TEM images, M
 
 ## Contact
 Send your questions and suggestions to Dr. Tao Ma at matao1984@gmail.com
+
+## Update History
+### 2025/11/11 
+- Updated all filters to accept non-square images
+- Updated all filters to accept image stacks
+- Rewrote the background subtraction algorithm
+- Removed the dependent on Pandas
+- Used numba to speed up the process
+- Wrote a wraper function to apply selected filter on image or stack
+- Modified the gaussian_lowpass function to also take a hp_cutoff_ratio to work as high-pass or band-pass filter
+
 
 
 

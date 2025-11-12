@@ -1,20 +1,42 @@
 import numpy as np
 from scipy.fft import fft2, fftshift, ifftshift, ifft2
-import pandas as pd
 from scipy.signal import medfilt2d
+from numba import njit, prange
+import warnings
 
 # Crop the input images if they are not square
 def crop_to_square(img):
-    x, y = img.shape
+    y, x = img.shape
     if x > y:
         new_start = int((x - y) / 2)
         new_end = new_start + y 
-        img_crop = img[new_start:new_end,:]
+        img_crop = img[:,new_start:new_end]
     else:
         new_start = int((y - x) / 2)
         new_end = new_start + x 
-        img_crop = img[:,new_start:new_end]
+        img_crop = img[new_start:new_end,:]
     return img_crop
+
+def pad_to_square(img):
+    '''
+    Pad the input images to be square by adding zeros on the right and bottom sides
+    '''
+    # Get current dimensions
+    rows, cols = img.shape
+
+    # Determine the maximum dimension
+    max_dim = max(rows, cols)
+
+    # Calculate padding for rows and columns
+    row_padding = max_dim - rows
+    col_padding = max_dim - cols
+
+    # Apply padding using np.pad()
+    # Pad bottom for rows, and right for columns
+    padded_arr = np.pad(img, ((0, row_padding), (0, col_padding)), mode='constant', constant_values=0)
+
+    return padded_arr
+
 
 
 
@@ -22,7 +44,7 @@ def crop_to_square(img):
 def img_to_polar(img):
     # Feed an image array, generate a polar indices array 
     y, x = np.indices(img.shape)
-    center = (img.shape[0] + 1) / 2, (img.shape[1] +1 ) / 2
+    center = img.shape[0] // 2, img.shape[1] // 2
     x = x - center[0]
     y = y - center[1]
     rho = np.hypot(y, x) # calculate sqrt(x**2 + y**2)
@@ -31,28 +53,50 @@ def img_to_polar(img):
     return rho # rho is the radial distance
 
 # Gaussian low pass filter
-def gaussian_lowpass(img, cutoff_ratio):
+def gaussian_lowpass(img, cutoff_ratio, hp_cutoff_ratio=0, space='real'):
     """
     img: image array to be filtered, must be square
-    cutoff_ratio: cutoff ratio in frequency domain
+    cutoff_ratio: cutoff ratio in frequency domain. 
+    If cutoff_ratio = 1, no lowpass filtering is applied.
+    hp_cutoff_ratio: if specified, also apply a highpass filter
+    space: 'real' or 'fourier'. If 'fourier', the input img is FFT of a complex numpy array
     """
+    img_shape = img.shape
+    if img_shape[0] != img_shape[1]:
+        img = pad_to_square(img)
     r = img_to_polar(img)
-    
-    # Compute the FFT to find the frequency transform
-    fshift = fftshift(fft2(img))
+ 
 
     # Calculate the cutoff frequency
-    cutoff = img.shape[0] * cutoff_ratio
+    if cutoff_ratio > 0 and cutoff_ratio < 1:
+        cutoff = r.shape[0] * cutoff_ratio
     
-    # Create Gaussian mask
-    gaussian_filter = np.exp(- (r**2) / (2 * (cutoff**2)))
+        # Create Gaussian mask
+        lp_gaussian_filter = np.exp(- (r**2) / (2 * (cutoff**2)))
+    else: 
+        # No filtering outside the valid range
+        warnings.warn("Lowpass cutoff_ratio should be between 0 and 1. No lowpass filtering applied.", UserWarning)
+        lp_gaussian_filter = np.ones_like(r, dtype=np.float64)
     
+    if hp_cutoff_ratio > 0 and hp_cutoff_ratio < 1:
+        hp_cutoff = r.shape[0] * hp_cutoff_ratio
+        hp_gaussian_filter = 1 - np.exp(- (r**2) / (2 * (hp_cutoff**2)))
+    else:
+        # No filtering outside the valid range
+        warnings.warn("Highpass hp_cutoff_ratio should be between 0 and 1. No highpass filtering applied.", UserWarning)    
+        hp_gaussian_filter = np.ones_like(r, dtype=np.float64)
+    
+    if space == 'real':
+        # Compute the FFT to find the frequency transform
+        fshift = fftshift(fft2(img))
+    elif space == 'fourier':
+        fshift = img
     # Apply the filter to the frequency domain representation of the image
-    filtered_fshift = fshift * gaussian_filter
+    filtered_fshift = fshift * lp_gaussian_filter * hp_gaussian_filter
 
     # Apply the inverse FFT to return to the spatial domain
-    img_glp = ifft2(ifftshift(filtered_fshift))
-    img_glp = np.real(img_glp)
+    img_glp = ifft2(ifftshift(filtered_fshift)).real
+    img_glp = img_glp[:img_shape[0], :img_shape[1]]
     return img_glp
 
 # Butterworth lowpass filter
@@ -62,87 +106,142 @@ def bw_lowpass(img, order, cutoff_ratio):
     order: Butterworth order
     cutoff_ratio: cutoff ratio in frequency domain
     """
+    img_shape = img.shape
+    if img_shape[0] != img_shape[1]:
+        img = pad_to_square(img)
     r = img_to_polar(img) # Convert to polar indices
-    bw = 1/(1+0.414*(r/(cutoff_ratio * img.shape[0]))**(2*order))
+    if cutoff_ratio <= 0 or cutoff_ratio >= 1:
+        warnings.warn("Cutoff ratio should be between 0 and 1. No lowpass filtering applied.", UserWarning)
+        return img
+    bw = 1/(1+0.414*(r/(cutoff_ratio * r.shape[0]))**(2*order))
     
     # Compute the FFT to find the frequency transform
     fshift = fftshift(fft2(img))
-    
+
     # Apply the filter to the frequency domain representation of the image
     filtered_fshift = fshift * bw
 
     # Apply the inverse FFT to return to the spatial domain
-    img_bw = ifft2(ifftshift(filtered_fshift))
-    img_bw = np.real(img_bw)
+    img_bw = ifft2(ifftshift(filtered_fshift)).real
+    img_bw = img_bw[:img_shape[0], :img_shape[1]]
     return img_bw
 
+# Radial integration
+def radial_integration(img, bin=1, return_masks = False):
+    # Get the polar indices array
+    r = img_to_polar(img)
+
+    r_max = np.max(r)
+    # Get the bin indices for each pixel
+    bins = np.arange(0, r_max+bin, bin)
+    bin_indices = np.digitize(r, bins) - 1
+    bins = bins[:img.shape[0]//2] # Limit the bins to half the image size
+    # Sum values in each bin
+    radial_profile = np.bincount(bin_indices.flatten(), weights=img.flatten(), minlength=len(bins))
+    radial_profile = radial_profile[:len(bins)-1]
     
+    
+    # # Sum the image values within each bin
+    # radial_profile = np.array([img[bin_indices == i].mean() for i in range(len(bins)-1)])
+
+    if return_masks:
+        # Create masks for each bin
+        bin_range = np.arange(len(bins)-1)
+        masks = (bin_indices == bin_range[:, None, None])
+        # masks = np.zeros((len(bins)-1, img.shape[0], img.shape[1]), dtype=bool)
+        # for i in range(len(bins)-1):
+        #     masks[i][bin_indices == i] = True
+        return bins[:-1], radial_profile, masks
+    else:
+        return bins[:-1], radial_profile
+
 
 # Function to get an averaged background from a real-space HR image
+
 def get_avg_background(img, delta=5):
     """
     img: 2D array of real-space HR image data
     delta: a threashold for background averaging
     """
     # Get the polar indices array
-    r = img_to_polar(img)
-    r = r.astype(int)
-    
+    #r = img_to_polar(img)
+    y, x = np.indices(img.shape)
+    center = (img.shape[0] + 1) / 2, (img.shape[1] +1 ) / 2
+    x = x - center[0]
+    y = y - center[1]
+    r = np.hypot(y, x)
+
     # Get a Butterworth filter on image to remove the edge effect
     noedgebw = 1/(1+0.414*(r/(0.4 * r.shape[0]))**(2*12))
     noedgeimg = img * noedgebw
     f_noedge = fftshift(fft2(noedgeimg))
     # Light filter the FFT for processing
-    f_img = medfilt2d(np.abs(f_noedge),kernel_size=5)
+    f_mag = medfilt2d(np.abs(f_noedge),kernel_size=5)
 
-    # Convert the FFT data into flattened real magnitude data
-    f_mag = f_img.flatten()
-    # Flatten the r array
-    r_mag = r.flatten()
+    # Get the radial integration and masks
 
-    # Sort the polar indices and separate the FFT data by r 
-    df = pd.DataFrame({'r_mag': r_mag, 'f_mag': f_mag})    
-    grouped = df.groupby('r_mag')['f_mag'].apply(list)   
-    r_bin = np.array(grouped.index)
-    f_bin = np.array(grouped.values) 
+    _, f_mean, masks = radial_integration(f_mag, return_masks=True)
+        
+    f_mag = remove_peaks_bin(f_mag, masks, f_mean, delta=delta)
 
-    # Get a mean plot for the FFT
-    f_mean0 = [np.mean(bin) for bin in f_bin]
+    return f_mag
 
 
-    # For each r bin, replace the pixels > mean with mean0, and take the new mean1.
-    # Compare the mean1 and mean0, if the difference is < threashold%, stop
-    # This needs to be done through all the bins
-    # Make a copy of the original mean list
-    f_mean = f_mean0[:]
-    for i in range(len(f_bin)):
-        bin = np.array(f_bin[i])
-        mean = np.mean(bin) * (100 + delta) * 0.01 # Overshoot by the threashold 
-        # Initialize difference as infinity
+@njit(parallel=True, fastmath=True)
+def remove_peaks_bin(img, masks, means, delta=5):
+    """
+    Optimized version that pre-extracts ROI coordinates for faster iteration.
+    """
+    delta_factor = 1.0 + delta / 100.0
+    img_out = img.copy()
+    
+    for i in prange(len(means)):
+        if means[i] <= 0:
+            continue
+            
+        mask = masks[i]
+        mean_val = means[i] * delta_factor
         diff_pc = np.inf
-        # While the percentage difference between mean values is greater than the threshold
-        while diff_pc > delta and mean > 0:
-            # Replace any data > mean 
-            bin[bin > mean] = mean   
-            # Recalculate mean
-            new_mean = np.mean(bin) * (100 + delta) * 0.01 
-            # Calculate the percentage difference
-            diff_pc = np.abs((new_mean - mean) / mean) * 100    
-            # Update the mean value
-            mean = new_mean
-        if mean < 0:
-            mean = 0
-        # Update the mean data
-        f_mean[i] = mean
+        iter_count = 0
+        max_iter = 100
+        
+        # Extract ROI data
+        roi = []
+        roi_coords = []
+        for y in range(mask.shape[0]):
+            for x in range(mask.shape[1]):
+                if mask[y, x]:
+                    roi.append(img[y, x])
+                    roi_coords.append((y,x))
+        
+        if not roi:
+            continue  # Skip empty masks
+        
+        while diff_pc > delta and mean_val > 0 and iter_count < max_iter:
+            sum_roi = 0
+            count = len(roi_coords)
+            for point in roi:            
+                if point > mean_val:
+                    point = mean_val
+                sum_roi += point
+            # Calculate new mean
+            new_mean = (sum_roi / count) * delta_factor
+            
+            # Calculate percentage difference
+            if mean_val > 1e-10:
+                diff_pc = abs((new_mean - mean_val) / mean_val) * 100.0
+            else:
+                diff_pc = 0.0
+            
+            mean_val = new_mean
+            iter_count += 1
 
-    # Construct the background array
-    f_avg_r = dict(zip(r_bin, f_mean))
-    f_avg = np.zeros(f_img.shape)
-    for i in range(r.shape[0]):
-        for j in range(r.shape[1]):
-            f_avg[i, j] = f_avg_r[r[i, j]]
-                                    
-    return f_avg
+        # Write the final mean value to the image
+        for coord in roi_coords:
+            y, x = coord
+            img_out[y, x] = mean_val
+    
+    return img_out
 
 
 # Wiener filter function
@@ -156,14 +255,21 @@ def wiener_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=
     lowpass_order: order for the Butterworth filter; smaller int retults more tapered cutoff
     Return: filtered image array and difference
     """
+    img_shape = img.shape
+    if img_shape[0] != img_shape[1]:
+        img = pad_to_square(img)
+
     f_img = fftshift(fft2(img))
     fu = np.abs(f_img)
     fa = get_avg_background(img, delta=delta)
-    wf = (fu**2 - fa**2)/fu**2
+    fu_squared = np.square(fu)
+    fa_squared = np.square(fa)
+    wf = (fu_squared - fa_squared)/fu_squared
     wf[wf<0] = 0
     f_img_wf = f_img * wf
-    img_wf = ifft2(ifftshift(f_img_wf))
-    img_wf = np.real(img_wf)
+    img_wf_padded = ifft2(ifftshift(f_img_wf)).real
+    img_wf = img_wf_padded[:img_shape[0], :img_shape[1]]
+    img = img[:img_shape[0], :img_shape[1]]
     if lowpass:
         img_wf = bw_lowpass(img_wf, lowpass_order, lowpass_cutoff)
     img_wf = np.single(img_wf)
@@ -181,14 +287,18 @@ def abs_filter(img, delta=5, lowpass=True, lowpass_cutoff=0.3, lowpass_order=2):
     lowpass_order: order for the Butterworth filter; smaller int retults more tapered cutoff
     Return: filtered image array and difference
     """
+    img_shape = img.shape
+    if img_shape[0] != img_shape[1]:
+        img = pad_to_square(img)
     f_img = fftshift(fft2(img))
     fu = np.abs(f_img)
     fa = get_avg_background(img, delta=delta)
     absf = (fu - fa)/fu
     absf[absf<0] = 0
     f_img_absf = f_img * absf
-    img_absf = ifft2(ifftshift(f_img_absf))
-    img_absf = np.real(img_absf)
+    img_absf = ifft2(ifftshift(f_img_absf)).real
+    img_absf = img_absf[:img_shape[0], :img_shape[1]]
+    img = img[:img_shape[0], :img_shape[1]]
     if lowpass:
         img_absf = bw_lowpass(img_absf, lowpass_order, lowpass_cutoff)
     img_absf = np.single(img_absf)
@@ -207,6 +317,9 @@ def nlfilter(img, N=50, delta=10, lowpass_cutoff=0.3, lowpass = True, lowpass_or
     The Butterworth filter will use lowpass_order and lowpass_cutoff
     Return: filtered image array and difference
     """
+    img_shape = img.shape
+    if img_shape[0] != img_shape[1]:
+        img = pad_to_square(img)
     x_in = img
     i=0
     while i < N:
@@ -220,6 +333,41 @@ def nlfilter(img, N=50, delta=10, lowpass_cutoff=0.3, lowpass = True, lowpass_or
         x_in = x_lp + x_diff_wf
         i = i+1
 
-    img_filtered = np.single(x_in) # Convert to 32 bit float
+    img_filtered = x_in[:img_shape[0], :img_shape[1]]
+    img_filtered = np.single(img_filtered) # Convert to 32 bit float
+    img = img[:img_shape[0], :img_shape[1]]
     img_diff = img - img_filtered
     return img_filtered, img_diff
+
+
+def apply_filter(img, filter_type, **kwargs):
+    '''Wrapper function to apply different filters
+    img: 2D or 3D numpy array
+    filter_type: 'Wiener', 'ABS', 'NL', 'BW', 'Gaussian'
+    kwargs: parameters for different filters
+    Return: filtered image or image stack, difference is not returned
+    '''
+    filter_dict = {'Wiener': wiener_filter,
+                   'ABS': abs_filter,
+                   'NL': nlfilter,
+                   'BW': bw_lowpass,
+                   'Gaussian': gaussian_lowpass
+                   }
+    if img.ndim == 2:
+        # Apply the selected filter only on 2D array
+        if filter_type in filter_dict.keys():
+            result = filter_dict[filter_type](img, **kwargs)
+            if filter_type in ['Wiener', 'ABS', 'NL']:
+                return result[0]
+            elif filter_type in ['BW', 'Gaussian']:
+                return result
+    elif img.ndim == 3:
+        # Apply to image stacks
+        img_shape = img.shape
+        result = np.zeros(img_shape)
+        for i in range(img_shape[0]):
+            result_i = apply_filter(img[i], filter_type, **kwargs)
+            result[i] = result_i
+        return result
+    else:
+        raise ValueError("Unsupported image dimensions")
